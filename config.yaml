@@ -1,0 +1,147 @@
+# jobsweep — sweeps companies' OWN career pages (not job aggregators),
+# scores the results against your profile, and writes a daily digest.
+#
+# Setup
+#   pip install -r requirements.txt
+#   export APIFY_TOKEN=...        # apify.com -> Settings -> API & Integrations
+#   python jobsweep.py --dry-run  # fetch + score, write nothing
+#   python jobsweep.py            # sweep, write digests/, update the db
+#
+# ───────────────────────────────────────────────────────────────────────────
+# The terms below are a WORKED EXAMPLE for a data-engineering search, so you
+# can see the mechanics. Replace them with your own field — or better, put
+# your real search in config.local.yaml, which merges over this file and is
+# gitignored. Overriding `queries` there swaps both tracks at once.
+# ───────────────────────────────────────────────────────────────────────────
+#
+# HOW MATCHING WORKS — learned by burning API credits, read before editing:
+#   * Matching is TOKEN-based, not substring: "Search" does NOT match
+#     "Research". Use ":*" for prefix matching, e.g. "Python:*".
+#   * titleSearch and descriptionSearch are ANDed. Terms WITHIN either are ORed.
+#   * timeRange filters on when the INDEX saw a job, not when it was posted.
+#     Keep it for scheduled runs — datePostedAfter silently misses slow ATS
+#     (Workday and BambooHR lagged up to 4 days in testing). The SQLite
+#     store dedupes, so an overlapping window is harmless.
+#   * You pay per row returned. Filter at the source, not afterwards.
+#   * `limit` must be >= 10 — the API rejects anything smaller with a 400.
+#
+# SCORING TERMS (the lists further down) match differently from the API:
+#   * Whole words only. "intern" does NOT match "International" — this is
+#     deliberate, and getting it wrong silently deletes good roles.
+#   * No stemming: "engineer" does not match "engineering". Add a trailing
+#     "*" when you want a prefix: "engineer*", "market*".
+#   * AFTER EDITING ANY TERM LIST, run:  python jobsweep.py --explain
+#     It reports how many stored postings each term matches, with examples,
+#     and flags terms that match nothing or that drop an unusual share.
+
+source:
+  mode: indexed          # "indexed" (nationwide) | "direct" (own slug list)
+  indexed:
+    actor: "fantastic-jobs~career-site-job-listing-api"
+    token_env: APIFY_TOKEN
+
+    queries:
+      # ── Track 1: titles that are unambiguously your field. ──────────────
+      - name: core
+        input:
+          timeRange: "24h"
+          # Rows are billed, so this caps a run. 25/track is a cheap default
+          # for trying it out; raise it once your filters are tuned.
+          limit: 25
+          descriptionType: "text"
+          removeAgency: true      # drops staffing-agency reposts
+          titleSearch:
+            ["data engineer", "analytics engineer", "data platform",
+             "data infrastructure", "ETL developer"]
+          # Each exclusion should earn its place by catching a real false
+          # positive you saw in a --dry-run.
+          titleExclusionSearch:
+            [intern, "account executive", sdr, junior, "entry level",
+             "sales engineer", recruiter]
+          locationSearch: ["United States"]
+
+      # ── Track 2: broad title, gated on specific description terms. ──────
+      # Use this when your field's titles are inconsistent. A broad title
+      # alone would flood you; ANDing it with a few specific description
+      # terms finds roles whose *work* is your field whatever they're called.
+      #
+      # Choose description terms that are rare and specific. A term that
+      # appears in most postings in your industry will crowd out the real
+      # matches, because `limit` is spent on whatever the index returns first.
+      - name: adjacent
+        input:
+          timeRange: "24h"
+          # Rows are billed, so this caps a run. 25/track is a cheap default
+          # for trying it out; raise it once your filters are tuned.
+          limit: 25
+          descriptionType: "text"
+          removeAgency: true
+          titleSearch:
+            ["product manager", "technical program manager", "product owner",
+             "director of product", "head of product"]
+          descriptionSearch:
+            [dbt, Airflow, "data warehouse", Snowflake, "dimensional modeling"]
+          titleExclusionSearch:
+            [intern, junior, "entry level", "account executive"]
+          locationSearch: ["United States"]
+
+scoring:
+  # Terms that stand on their own — unambiguously your field.
+  title_strong_core: ["data engineer", "analytics engineer", "data platform",
+                      "data infrastructure"]
+  # Count as strong ONLY when no domain_exclusion appears in the posting.
+  # Put domain-ambiguous words here: the same token means different things in
+  # different industries, and these are what produce confident wrong matches.
+  title_strong_conditional: [pipeline, warehouse, modeling]
+  domain_exclusions: [oil, gas, drilling, pharmaceutical, clinical,
+                      semiconductor, automotive, logistics, warehouse associate]
+  # Relevant only alongside a stronger signal.
+  title_weak:   ["product manager", "technical program manager", "product owner",
+                 engineer, analytics]
+  # Word-boundary matched, so bare "sr" covers both "Sr." and "Sr Director".
+  seniority:    [senior, staff, principal, lead, head, director, manager, sr]
+  # NOTE "associate" is deliberately absent: "Associate Director" is a senior
+  # title, and excluding the token silently drops good roles. Likewise
+  # "contract" — leave it out unless you truly don't want contract work.
+  exclude:      [intern, internship, sdr, entry level, graduate]
+
+  # +1 when a posting mentions what sets you apart. Checked against title and
+  # description. Override in config.local.yaml to keep your angle private.
+  bonus_terms:
+    label: "modern stack"
+    terms: [dbt, Airflow, Snowflake, Databricks, Terraform]
+
+  # ── Override both of these in config.local.yaml ──
+  # Consulted ONLY for On-site/Hybrid roles. Never list a country here: it
+  # matches every city in it and marks cross-country roles "reachable".
+  locations_ok: []
+  # An out-of-range on-site role still surfaces if the title is this senior...
+  waive_location_titles: [director, head of, vp, vice president, principal,
+                          staff, chief, distinguished]
+  # ...or if it pays at least this much.
+  waive_location_salary: 150000
+
+  threshold: 5
+
+# Your background, for the optional LLM fit scoring (--evaluate). Gitignored:
+# keep your own CV text out of the repo.
+profile_file: profile.local.md
+
+output:
+  # Postings, fit scores and your application status. On a synced folder
+  # (OneDrive/Dropbox) or a network share, point this at a local path.
+  db: jobsweep.sqlite3
+  digest_dir: digests
+
+# ─────────────────────────────────────────────────────────────────────────
+# config.local.yaml — gitignored, merged over this file. Put the real search
+# here so this file stays shareable:
+#
+#   source:
+#     indexed:
+#       queries: [ ...your real tracks... ]
+#   scoring:
+#     title_strong_core: [ ...your real terms... ]
+#     locations_ok: [your-state, nearby-city]
+#     waive_location_salary: 150000
+# ─────────────────────────────────────────────────────────────────────────

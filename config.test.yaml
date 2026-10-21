@@ -1,0 +1,37 @@
+# Fixture for tests_regression.py — committed on purpose.
+#
+# The suite must not depend on config.yaml (which people edit) or on
+# config.local.yaml (which is gitignored and absent from a fresh clone).
+# Terms here are chosen to exercise the matcher, not to find anyone a job.
+
+source:
+  mode: indexed
+  indexed:
+    actor: "fantastic-jobs~career-site-job-listing-api"
+    token_env: APIFY_TOKEN
+    queries:
+      - name: fixture
+        input:
+          timeRange: "24h"
+          limit: 10
+          titleSearch: [seo]
+          locationSearch: ["United States"]
+
+scoring:
+  title_strong_core: [seo, organic search, organic growth, ai visibility]
+  title_strong_conditional: [geo, genai, discovery]
+  domain_exclusions: [neuroscience, semiconductor, oil]
+  title_weak: [product manager, search, growth]
+  seniority: [senior, staff, principal, lead, head, director, manager, sr]
+  exclude: [intern, internship, graduate, entry level]
+  locations_ok: [springfield, riverside, fairview]
+  waive_location_titles: [director, head of, vp, principal, staff]
+  waive_location_salary: 150000
+  bonus_terms:
+    label: "AI angle"
+    terms: [llm, generative, ai search]
+  threshold: 5
+
+output:
+  db: jobsweep.sqlite3
+  digest_dir: digests

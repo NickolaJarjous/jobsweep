@@ -1,0 +1,21 @@
+# Private overrides — your commute cities, comp floor, real search terms
+config.local.yaml
+profile.local.md
+
+# Your actual job search: postings, statuses, digests
+jobsweep.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+digests/
+*.log
+
+# Secrets — tokens belong in the environment, never in the repo
+.env
+*.token
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
